@@ -17,6 +17,7 @@ from sqlparse.filters.output import OutputPHPFilter, OutputPythonFilter
 from sqlparse.filters.reindent import ReindentFilter
 from sqlparse.filters.right_margin import RightMarginFilter
 from sqlparse.filters.tokens import (
+    CopyDataFilter,
     IdentifierCaseFilter,
     KeywordCaseFilter,
     TruncateStringFilter,
@@ -24,6 +25,7 @@ from sqlparse.filters.tokens import (
 
 __all__ = [
     'AlignedIndentFilter',
+    'CopyDataFilter',
     'IdentifierCaseFilter',
     'KeywordCaseFilter',
     'OutputPHPFilter',

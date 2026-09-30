@@ -12,14 +12,21 @@ from sqlparse.engine import grouping
 from sqlparse.engine.statement_splitter import StatementSplitter
 from sqlparse.exceptions import SQLParseError
 from sqlparse.filters import StripTrailingSemicolonFilter
+from sqlparse.filters.tokens import CopyDataFilter
 
 
 class FilterStack:
-    def __init__(self, strip_semicolon=False):
+    def __init__(self, strip_semicolon=False, postgres_copy=False):
         self.preprocess = []
         self.stmtprocess = []
         self.postprocess = []
         self._grouping = False
+        self._postgres_copy = postgres_copy
+        # Must run before any other preprocess filter so that the raw data
+        # of COPY blocks is already opaque for keyword/identifier casing
+        # and string truncation filters.
+        if postgres_copy:
+            self.preprocess.append(CopyDataFilter())
         if strip_semicolon:
             self.stmtprocess.append(StripTrailingSemicolonFilter())
 
@@ -33,7 +40,8 @@ class FilterStack:
             for filter_ in self.preprocess:
                 stream = filter_.process(stream)
 
-            stream = StatementSplitter().process(stream)
+            stream = StatementSplitter(
+                postgres_copy=self._postgres_copy).process(stream)
 
             # Output: Stream processed Statements
             for stmt in stream:

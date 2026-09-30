@@ -168,7 +168,27 @@ class StripTrailingSemicolonFilter:
 # postprocess
 
 class SerializerUnicode:
-    @staticmethod
-    def process(stmt):
-        lines = split_unquoted_newlines(stmt)
-        return '\n'.join(line.rstrip() for line in lines)
+    def process(self, stmt):
+        # Normalize the SQL the usual way (rstripping each line), but keep
+        # the raw data of PostgreSQL ``COPY ... FROM STDIN`` blocks
+        # byte-for-byte: the flatten() walk splits the statement at opaque
+        # CopyData tokens and only the SQL spans are normalized, each as a
+        # whole so whitespace around grouped tokens is untouched.
+        parts = []
+        span = []
+
+        def flush():
+            if span:
+                text = ''.join(span)
+                lines = split_unquoted_newlines(text)
+                parts.append('\n'.join(line.rstrip() for line in lines))
+                span.clear()
+
+        for token in stmt.flatten():
+            if token.ttype is T.CopyData:
+                flush()
+                parts.append(token.value)
+            else:
+                span.append(token.value)
+        flush()
+        return ''.join(parts)

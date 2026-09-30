@@ -447,6 +447,41 @@ class Statement(TokenList):
         # Hmm, probably invalid syntax, so return unknown.
         return 'UNKNOWN'
 
+    def get_copy_data(self):
+        """Return the raw inline data of a PostgreSQL ``COPY`` statement.
+
+        This is only available when the parser was run in PostgreSQL
+        script mode (``postgres_copy=True``). The returned string holds
+        the data rows exactly as they appeared in the source: it starts
+        with the first row after the header's line break and ends with
+        the last row's line break, excluding the ``\\.`` terminator line.
+        Characters and line boundaries are preserved. Returns ``None``
+        for statements without an inline data block.
+        """
+        token = self.token_next_by(t=T.CopyData)[1]
+        if token is None:
+            return None
+        data = token.value
+        # Drop the line break separating header and data.
+        if data.startswith('\r\n'):
+            data = data[2:]
+        elif data[:1] in ('\n', '\r'):
+            data = data[1:]
+        # Locate the physical line containing only "\.".  split() yields
+        # [content0, break0, content1, break1, ..., contentN]; the
+        # terminator may be the final line without a trailing break (EOF
+        # right after "\.").
+        lines = re.split(r'(\r\n|\r|\n)', data)
+        for idx in range(0, len(lines), 2):
+            if lines[idx] != '\\.':
+                continue
+            # Keep the data rows and the line break that terminates the
+            # last row (which sits right before the terminator); the
+            # terminator itself and everything following it are dropped.
+            return ''.join(lines[:idx])
+        # No terminator line (unterminated block): everything is data.
+        return data
+
 
 class Identifier(NameAliasMixin, TokenList):
     """Represents an identifier.

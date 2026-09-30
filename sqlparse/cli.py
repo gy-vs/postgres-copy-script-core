@@ -160,6 +160,16 @@ def create_parser():
         default='utf-8',
         help='Specify the input encoding (default utf-8)')
 
+    group.add_argument(
+        '--postgres-copy',
+        dest='postgres_copy',
+        action='store_true',
+        default=False,
+        help='treat PostgreSQL COPY ... FROM STDIN blocks (data rows up '
+             'to the \\. line) as part of the preceding statement; the '
+             'raw data is preserved while the surrounding SQL is still '
+             'formatted')
+
     return parser
 
 

@@ -204,3 +204,23 @@ def test_cli_error_handling_continues(tmpdir, capsys):
     assert "select * from baz" in file3.read()
     _, err = capsys.readouterr()
     assert "Failed to read" in err
+
+
+def test_cli_pg_copy_stdin_matches_api():
+    """--pg-copy on stdin keeps COPY data verbatim, like the Python API."""
+    data = ('COPY observations (id, note) FROM STDIN WITH (FORMAT csv);\n'
+            '1,"a;b"\n2,"c"\n\\.\nSELECT 42;')
+    cmd = [sys.executable, '-m', 'sqlparse', '-r', '--pg-copy', '-']
+    proc = subprocess.run(cmd, input=data, capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert proc.stdout == sqlparse.format(data, pg_copy=True, reindent=True)
+    assert '1,"a;b"\n2,"c"\n\\.\n' in proc.stdout
+
+
+def test_cli_pg_copy_flag_absent_keeps_legacy_behavior():
+    data = 'COPY t FROM STDIN;\n1,"a;b"\n\\.\nSELECT 1;'
+    cmd = [sys.executable, '-m', 'sqlparse.cli', '-r', '-']
+    proc = subprocess.run(cmd, input=data, capture_output=True, text=True)
+    assert proc.returncode == 0
+    # legacy mode reflows the data lines
+    assert '1,"a;b"\n' not in proc.stdout

@@ -131,6 +131,11 @@ def validate_options(options):
             raise SQLParseError('right_margin requires an integer > 10')
     options['right_margin'] = right_margin
 
+    pg_copy = options.get('pg_copy', False)
+    if pg_copy not in [True, False]:
+        raise SQLParseError('Invalid value for pg_copy: '
+                            f'{pg_copy!r}')
+
     return options
 
 

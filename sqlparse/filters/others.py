@@ -161,6 +161,14 @@ class StripTrailingSemicolonFilter:
         while stmt.tokens and (stmt.tokens[-1].is_whitespace
                                or stmt.tokens[-1].value == ';'):
             stmt.tokens.pop()
+        # In PostgreSQL script mode the terminating semicolon of a
+        # COPY statement sits in front of its raw data section.
+        if stmt.tokens and stmt.tokens[-1].ttype is T.CopyData:
+            idx = len(stmt.tokens) - 1
+            while idx > 0 and stmt.tokens[idx - 1].is_whitespace:
+                idx -= 1
+            if idx > 0 and stmt.tokens[idx - 1].value == ';':
+                del stmt.tokens[idx - 1]
         return stmt
 
 
@@ -170,5 +178,24 @@ class StripTrailingSemicolonFilter:
 class SerializerUnicode:
     @staticmethod
     def process(stmt):
-        lines = split_unquoted_newlines(stmt)
-        return '\n'.join(line.rstrip() for line in lines)
+        # A PostgreSQL COPY data section must be written back byte for
+        # byte: splitting it into lines and rstripping would change the
+        # imported data. Serialize the surrounding tokens normally and
+        # splice the untouched section back in at its original position.
+        parts = []
+        rest = []
+        for token in stmt.flatten():
+            if token.ttype is T.CopyData:
+                if rest:
+                    lines = split_unquoted_newlines(
+                        ''.join(t.value for t in rest))
+                    parts.append('\n'.join(line.rstrip() for line in lines))
+                    rest = []
+                parts.append(token.value)
+            else:
+                rest.append(token)
+        if rest:
+            lines = split_unquoted_newlines(
+                ''.join(t.value for t in rest))
+            parts.append('\n'.join(line.rstrip() for line in lines))
+        return ''.join(parts)

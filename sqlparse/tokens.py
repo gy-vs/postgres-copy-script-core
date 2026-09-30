@@ -41,6 +41,10 @@ Newline = Whitespace.Newline
 Error = Token.Error
 # Text that doesn't belong to this lexer (e.g. HTML in PHP)
 Other = Token.Other
+# Raw data following a PostgreSQL ``COPY ... FROM STDIN`` statement up to
+# and including the ``\\.`` terminator. Its contents are not SQL and must
+# pass through splitting and formatting untouched.
+CopyData = Other.CopyData
 
 # Common token types for source code
 Keyword = Token.Keyword

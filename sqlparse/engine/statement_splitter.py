@@ -154,6 +154,19 @@ class StatementSplitter:
 
         # Run over all stream tokens
         for ttype, value in stream:
+            # The raw data section of a PostgreSQL COPY statement is not
+            # SQL: it belongs to the statement whose semicolon introduced
+            # it, even though that statement is already waiting to be
+            # closed. Keep consuming it verbatim and stay armed so that
+            # the first token after the data starts a new statement.
+            if ttype is T.CopyData:
+                if self.consume_ws:
+                    self.tokens.append(sql.Token(ttype, value))
+                    continue
+                self.level += self._change_splitlevel(ttype, value)
+                self.tokens.append(sql.Token(ttype, value))
+                continue
+
             # Yield token if we finished a statement and there's no whitespaces
             # It will count newline token as a non whitespace. In this context
             # whitespace ignores newlines.

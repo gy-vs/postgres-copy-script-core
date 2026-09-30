@@ -116,26 +116,28 @@ class Lexer:
 
         ``stack`` is the initial stack (default: ``['root']``)
         """
-        if isinstance(text, TextIOBase):
-            text = text.read()
-
-        if isinstance(text, str):
-            pass
-        elif isinstance(text, bytes):
-            if encoding:
-                text = text.decode(encoding)
-            else:
-                try:
-                    text = text.decode('utf-8')
-                except UnicodeDecodeError:
-                    text = text.decode('unicode-escape')
-        else:
-            raise TypeError(f"Expected text or file-like object, got {type(text)!r}")
-
+        text = self._decode_text(text, encoding)
         delimited_spans = keywords.find_delimited_spans(text)
+
+        for ttype, value, end in self.scan(text, 0, len(text),
+                                           delimited_spans):
+            yield ttype, value
+
+    def scan(self, text, start, end, delimited_spans=None):
+        """Yield ``(tokentype, value, end_offset)`` triples for the
+        substring ``text[start:end]``.
+
+        Unlike :meth:`get_tokens` this does not decode or pre-scan the
+        text: the caller supplies the absolute bounds and, optionally, a
+        precomputed :class:`~sqlparse.keywords.DelimitedSpans` instance.
+        This allows several segments of one input to be tokenized without
+        rescanning the whole text for each segment.
+        """
+        if delimited_spans is None:
+            delimited_spans = keywords.find_delimited_spans(text)
         span_openers = delimited_spans.openers
 
-        iterable = enumerate(text)
+        iterable = enumerate(text[start:end], start)
         for pos, char in iterable:
             # Only positions the lexer actually reaches may open a
             # dollar-quoted literal or a multiline comment; a delimiter
@@ -144,25 +146,45 @@ class Lexer:
             if pos in span_openers:
                 resolved = delimited_spans.resolve(pos)
                 if resolved is not None:
-                    end, ttype = resolved
-                    yield ttype, text[pos:end]
-                    consume(iterable, end - pos - 1)
+                    span_end, ttype = resolved
+                    yield ttype, text[pos:span_end], span_end
+                    consume(iterable, span_end - pos - 1)
                     continue
 
             for rexmatch, action in self._SQL_REGEX:
-                m = rexmatch(text, pos)
+                m = rexmatch(text, pos, end)
 
                 if not m:
                     continue
                 elif isinstance(action, tokens._TokenType):
-                    yield action, m.group()
+                    yield action, m.group(), m.end()
                 elif action is keywords.PROCESS_AS_KEYWORD:
-                    yield self.is_keyword(m.group())
+                    ttype, value = self.is_keyword(m.group())
+                    yield ttype, value, m.end()
 
                 consume(iterable, m.end() - pos - 1)
                 break
             else:
-                yield tokens.Error, char
+                yield tokens.Error, char, pos + 1
+
+    @staticmethod
+    def _decode_text(text, encoding=None):
+        """Return *text* as a decoded string."""
+        if isinstance(text, TextIOBase):
+            text = text.read()
+
+        if isinstance(text, str):
+            return text
+        elif isinstance(text, bytes):
+            if encoding:
+                return text.decode(encoding)
+            else:
+                try:
+                    return text.decode('utf-8')
+                except UnicodeDecodeError:
+                    return text.decode('unicode-escape')
+        else:
+            raise TypeError(f"Expected text or file-like object, got {type(text)!r}")
 
 
 def tokenize(sql, encoding=None):
@@ -172,3 +194,110 @@ def tokenize(sql, encoding=None):
     of ``(token type, value)`` items.
     """
     return Lexer.get_default_instance().get_tokens(sql, encoding)
+
+
+# A line holding exactly ``\\.`` terminates the data section of a
+# PostgreSQL ``COPY ... FROM STDIN`` statement. The terminator must be
+# the first thing on its line, so a ``\\.`` inside a quoted CSV field is
+# not matched. The leading lookbehind accepts start of input, ``\n`` and
+# ``\r`` (the last two also cover CRLF), keeping the scan linear: one
+# C-level search over the data section.
+_COPY_TERMINATOR_RE = re.compile(r'(?<![^\r\n])\\\.(?:\r\n|\r|\n|$)')
+
+
+def tokenize_pg(sql, encoding=None):
+    """Tokenize a PostgreSQL script.
+
+    This behaves like :func:`tokenize`, except that the raw data section
+    following a ``COPY ... FROM STDIN`` statement is emitted as a single
+    :data:`~sqlparse.tokens.CopyData` token spanning the data rows and the
+    terminating ``\\.`` line. The data is never fed to the SQL lexer, so
+    characters inside it (keywords, parentheses, semicolons or a line
+    looking like the terminator inside a quoted CSV field) cannot affect
+    statement boundaries or formatting.
+
+    Only statements whose first keyword is ``COPY`` and which copy
+    ``FROM STDIN`` start a data section; all other statements are
+    tokenized normally.
+    """
+    lex = Lexer.get_default_instance()
+    text = lex._decode_text(sql, encoding)
+    length = len(text)
+    spans = keywords.find_delimited_spans(text)
+
+    pos = 0
+    while pos < length:
+        # Tokenize up to the first statement-terminating semicolon. The
+        # lexer already groups strings, comments and dollar-quoted
+        # literals, so a semicolon inside them cannot terminate the
+        # statement; a semicolon inside parentheses cannot either.
+        # Header tokens are buffered so a COPY ... FROM STDIN statement
+        # can be recognized only once its complete statement is known.
+        header = []
+        end = pos
+        paren_level = 0
+        for ttype, value, tok_end in lex.scan(text, pos, length, spans):
+            end = tok_end
+            header.append((ttype, value))
+            if ttype is tokens.Punctuation:
+                if value == '(':
+                    paren_level += 1
+                elif value == ')':
+                    paren_level = max(0, paren_level - 1)
+            if (ttype is tokens.Punctuation and value == ';'
+                    and paren_level == 0):
+                break
+        for ttype, value in header:
+            yield ttype, value
+
+        if _is_copy_from_stdin(header):
+            data_end = _find_copy_terminator(text, end)
+            if data_end is None:
+                # No terminator before end of script: take the remainder
+                # as data rather than letting it be lexed as SQL.
+                data_end = length
+            yield tokens.CopyData, text[end:data_end]
+            end = data_end
+        pos = end
+
+
+def _is_copy_from_stdin(header_tokens):
+    """Return True if the (already tokenized) header is a
+    ``COPY ... FROM STDIN ...;`` statement."""
+    saw_copy = False
+    saw_from = False
+    paren_level = 0
+    for ttype, value in header_tokens:
+        if ttype in tokens.Whitespace or ttype in tokens.Comment:
+            continue
+        if ttype is tokens.Punctuation and value == '(':
+            paren_level += 1
+            continue
+        if ttype is tokens.Punctuation and value == ')':
+            paren_level = max(0, paren_level - 1)
+            continue
+        # The column list (and any other parenthesized option) is not
+        # the FROM STDIN clause; a column coincidentally named "from"
+        # or "stdin" must not start a data section.
+        if paren_level > 0:
+            continue
+        if not saw_copy:
+            saw_copy = ttype is tokens.Keyword and value.upper() == 'COPY'
+            if not saw_copy:
+                return False
+        elif not saw_from:
+            if ttype is tokens.Keyword and value.upper() == 'FROM':
+                saw_from = True
+        elif (ttype is tokens.Keyword
+              or ttype in tokens.Name) and value.upper() == 'STDIN':
+            return True
+    return False
+
+
+def _find_copy_terminator(text, start):
+    """Return the offset just past the ``\\.`` terminator line beginning
+    at or after *start*, or None if no terminator is found."""
+    m = _COPY_TERMINATOR_RE.search(text, start)
+    if m is None:
+        return None
+    return m.end()

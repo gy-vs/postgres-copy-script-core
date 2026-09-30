@@ -155,6 +155,14 @@ def create_parser():
         help='Try to produce more compact output (default False)')
 
     group.add_argument(
+        '--pg-copy',
+        dest='pg_copy',
+        action='store_true',
+        default=False,
+        help='parse input as a PostgreSQL script: keep the raw data '
+             'section of COPY ... FROM STDIN statements verbatim')
+
+    group.add_argument(
         '--encoding',
         dest='encoding',
         default='utf-8',

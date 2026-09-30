@@ -11,6 +11,7 @@ from sqlparse import tokens as T
 
 class OutputFilter:
     varname_prefix = ''
+    _quote_char = ''
 
     def __init__(self, varname='sql'):
         self.varname = self.varname_prefix + varname
@@ -27,11 +28,28 @@ class OutputFilter:
             varname = self.varname
 
         has_nl = len(str(stmt).strip().splitlines()) > 1
-        stmt.tokens = self._process(stmt.tokens, varname, has_nl)
+        # A raw COPY data section is a single token that may itself span
+        # several lines and contain quote/backslash characters. Pre-escape
+        # it into one token the serializer can emit verbatim, so the
+        # generated string literal is valid while decoding to the exact
+        # original data.
+        quote = self._quote_char
+        stream = [self._prepare_copy_data(token, quote)
+                  if token.ttype is T.CopyData else token
+                  for token in stmt.tokens]
+        stmt.tokens = self._process(stream, varname, has_nl)
         return stmt
+
+    @staticmethod
+    def _prepare_copy_data(token, quote):
+        value = token.value.replace('\\', '\\\\').replace(quote, '\\' + quote)
+        value = value.replace('\r', '\\r').replace('\n', '\\n')
+        return sql.Token(T.CopyData, value)
 
 
 class OutputPythonFilter(OutputFilter):
+    _quote_char = "'"
+
     def _process(self, stream, varname, has_nl):
         # SQL query assignation to varname
         if self.count > 1:
@@ -64,7 +82,10 @@ class OutputPythonFilter(OutputFilter):
 
             # Escape backslashes before quotes so a backslash preceding a
             # quote cannot break out of the generated string literal
-            # (GHSA-3496-9g83-7v6x).
+            # (GHSA-3496-9g83-7v6x). A COPY data section was pre-escaped
+            # in its entirety (including its embedded line breaks).
+            elif token.ttype is T.CopyData:
+                pass
             else:
                 token.value = token.value.replace('\\', '\\\\').replace("'", "\\'")
 
@@ -79,6 +100,7 @@ class OutputPythonFilter(OutputFilter):
 
 class OutputPHPFilter(OutputFilter):
     varname_prefix = '$'
+    _quote_char = '"'
 
     def _process(self, stream, varname, has_nl):
         # SQL query assignation to varname (quote header)
@@ -115,7 +137,10 @@ class OutputPHPFilter(OutputFilter):
 
             # Escape backslashes before quotes so a backslash preceding a
             # quote cannot break out of the generated string literal
-            # (GHSA-3496-9g83-7v6x).
+            # (GHSA-3496-9g83-7v6x). A COPY data section was pre-escaped
+            # in its entirety (including its embedded line breaks).
+            elif token.ttype is T.CopyData:
+                pass
             else:
                 token.value = token.value.replace('\\', '\\\\').replace('"', '\\"')
 
